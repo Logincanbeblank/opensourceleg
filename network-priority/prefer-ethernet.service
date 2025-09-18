@@ -1,0 +1,11 @@
+[Unit]
+Description=Prefer Ethernet over Wi-Fi (Network priority tuning)
+After=NetworkManager.service
+Requires=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/prefer-ethernet.sh
+
+[Install]
+WantedBy=multi-user.target
