@@ -1,32 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Find the first ethernet connection profile
-ETH_CON=$(nmcli -t -f NAME,TYPE connection show | awk -F: '$2=="ethernet"{print $1; exit}')
-
-# Find all wifi connection profiles
-mapfile -t WIFI_CONS < <(nmcli -t -f NAME,TYPE connection show | awk -F: '$2=="wifi"{print $1}')
-
-# If we found an Ethernet profile
-if [[ -n "${ETH_CON:-}" ]]; then
-  # Enable auto-connect so Ethernet connects automatically when plugged
-  nmcli connection modify "$ETH_CON" autoconnect yes
-
-  # Set Ethernet to high priority (higher number = more preferred for auto-connect)
-  nmcli connection modify "$ETH_CON" connection.autoconnect-priority 100
-
-  # Set route metric lower so routing prefers Ethernet
-  nmcli connection modify "$ETH_CON" ipv4.route-metric 100 ipv6.route-metric 100
+# Load optional config overrides if present
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${SCRIPT_DIR}/config.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${SCRIPT_DIR}/config.sh"
 fi
 
-# For Wi-Fi profiles: still allow them, but make them lower priority
+# Defaults if config.sh not present
+ETH_STATIC_IP_CIDR="${ETH_STATIC_IP_CIDR:-192.168.50.2/24}"
+ETH_DNS="${ETH_DNS:-8.8.8.8}"
+ETH_ROUTE_METRIC="${ETH_ROUTE_METRIC:-100}"
+
+# Discover profiles
+ETH_CON=$(nmcli -t -f NAME,TYPE connection show | awk -F: '$2=="ethernet"{print $1; exit}')
+mapfile -t WIFI_CONS < <(nmcli -t -f NAME,TYPE connection show | awk -F: '$2=="wifi"{print $1}')
+
+# Configure Ethernet for isolated, static link to a laptop/PC
+# - Static IP (no gateway, never-default) so it never steals internet route
+# - High autoconnect priority so it comes up immediately when cable present
+if [[ -n "${ETH_CON:-}" ]]; then
+  nmcli connection modify "$ETH_CON" autoconnect yes
+  nmcli connection modify "$ETH_CON" connection.autoconnect-priority 100
+  nmcli connection modify "$ETH_CON" ipv4.method manual
+  nmcli connection modify "$ETH_CON" ipv4.addresses "$ETH_STATIC_IP_CIDR"
+  nmcli connection modify "$ETH_CON" ipv4.gateway ""                 # no gateway on the private wire
+  nmcli connection modify "$ETH_CON" ipv4.dns "$ETH_DNS"
+  nmcli connection modify "$ETH_CON" ipv4.never-default yes          # wifi keeps default route
+  nmcli connection modify "$ETH_CON" ipv4.route-metric "$ETH_ROUTE_METRIC"
+fi
+
+# Wi-Fi stays for internet (fallback / default)
 for W in "${WIFI_CONS[@]}"; do
-  nmcli connection modify "$W" autoconnect yes
-  nmcli connection modify "$W" connection.autoconnect-priority 0
-  nmcli connection modify "$W" ipv4.route-metric 600 ipv6.route-metric 600
+  nmcli connection modify "$W" autoconnect yes || true
+  nmcli connection modify "$W" connection.autoconnect-priority 0 || true
+  nmcli connection modify "$W" ipv4.method auto || true
+  nmcli connection modify "$W" ipv4.never-default no || true
+  nmcli connection modify "$W" ipv4.route-metric 600 || true
 done
 
-# If any connection is active, re-activate it so changes take effect
+# Re-activate active connections so changes take effect immediately
 nmcli -t -f NAME connection show --active | while read -r A; do
   nmcli connection up "$A" || true
 done
